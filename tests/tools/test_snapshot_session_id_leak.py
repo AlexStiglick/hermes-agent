@@ -41,9 +41,25 @@ def test_regex_matches_bridged_session_vars():
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     from gateway.session_context import _VAR_MAP
 
-    for name in (*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER):
+    for name in (*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER, "HERMES_CRON_SESSION"):
         line = f'declare -x {name}="whatever"'
         assert rx.search(line), f"{name} should be excluded from the snapshot"
+
+
+def test_export_snippet_shape():
+    snippet = _export_dump_excluding_session_vars('"$__hermes_snap_tmp"')
+    assert "export -p" in snippet
+    assert "unset" in snippet
+    assert "${!HERMES_SESSION_*}" in snippet
+    assert "${!HERMES_CRON_AUTO_DELIVER_*}" in snippet
+    assert "HERMES_UI_SESSION_ID" in snippet
+    assert "HERMES_DELEGATED_CHILD_CONTEXT" in snippet
+    assert "HERMES_CRON_SESSION" in snippet
+    assert "grep -vE" not in snippet
+    assert '"$__hermes_snap_tmp"' in snippet
+    assert snippet.lstrip().startswith("{ ")
+    assert "|| true; }" in snippet
+    assert snippet.rstrip().endswith('> "$__hermes_snap_tmp"')
 
 
 

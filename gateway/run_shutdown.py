@@ -1402,6 +1402,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             )
         watcher_env = drop_bridged_env(watcher_env)
         watcher_env.pop("_HERMES_GATEWAY", None)
+        # A gateway is never a delegate child: strip inherited fence markers so
+        # the respawned gateway's embedded dispatcher is not fenced (#136152).
+        from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+
+        watcher_env.pop(DELEGATED_CHILD_ENV_MARKER, None)
+        watcher_env.pop("HERMES_KANBAN_TASK", None)
         return watcher_env
 
     @staticmethod

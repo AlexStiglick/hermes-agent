@@ -1003,7 +1003,25 @@ def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:
     matching task_runs row so end-run / heartbeat have something to write.
     write_txn serializes against concurrent dispatchers, and the per-row
     UPDATE uses ``current_run_id IS NULL`` as a CAS guard so a racing claim
-    can't produce an orphaned row."""
+    can't produce an orphaned row.
+
+    Probe for work BEFORE write_txn: an empty backfill must not take a write
+    lock (or trip the delegate-child mutation fence) — otherwise every
+    connect()/init_db() refuses read-only CLI verbs whenever a stale
+    ``HERMES_DELEGATED_CHILD_CONTEXT`` marker is present.
+    """
+    runs_exist = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if not runs_exist:
+        return
+    needs_backfill = conn.execute(
+        "SELECT 1 FROM tasks "
+        "WHERE status = 'running' AND current_run_id IS NULL "
+        "LIMIT 1"
+    ).fetchone() is not None
+    if not needs_backfill:
+        return
     with write_txn(conn):
         inflight = conn.execute(
             "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "

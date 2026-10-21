@@ -778,6 +778,13 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
     # served_profile_child_env overlays that home's secrets instead of os.environ.copy().
     target = home if home is not None else _hermes_home()
     env = {**served_profile_child_env(target_home=target, inherit_credentials=True), **env_overlay}
+    # Respawn boundary: a gateway is never a delegate child. A marker inherited
+    # from a fenced session would fence the new gateway's embedded dispatcher
+    # (#136152). HERMES_KANBAN_TASK goes too — the gateway owns no task.
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+
+    env.pop(DELEGATED_CHILD_ENV_MARKER, None)
+    env.pop("HERMES_KANBAN_TASK", None)
 
     # Stray print()/native stderr goes to a sidecar log; real gateway logs still land in gateway.log
     # via the logging FileHandler.

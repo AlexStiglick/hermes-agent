@@ -181,12 +181,25 @@ def kanban_command(args: argparse.Namespace) -> int:
         # KanbanDbCorruptError, which would turn every repair into "could not initialize database".
         if action == "repair":
             return _cmd_repair(args)
-        # init_db is idempotent (one sqlite_master SELECT when tables exist) and prevents
-        # "no such table: tasks" on first use from a fresh HERMES_HOME.
-        try:
-            kb.init_db()
-        except Exception as exc:
-            return _err(f"kanban: could not initialize database: {exc}")
+        # Read-only verbs against an existing board must not fail solely because
+        # init_db → write_txn trips a stale / inherited delegate-child fence.
+        # Skip the forced re-migration in that case; connect() still serves
+        # reads, and real child mutations remain denied at write_txn.
+        skip_init = False
+        if action in _READ_ONLY_KANBAN_ACTIONS and kb.kanban_db_path().exists():
+            try:
+                from agent.delegation_context import is_delegated_child_process_context
+
+                skip_init = is_delegated_child_process_context()
+            except Exception:
+                skip_init = bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+        if not skip_init:
+            # init_db is idempotent (one sqlite_master SELECT when tables exist) and prevents
+            # "no such table: tasks" on first use from a fresh HERMES_HOME.
+            try:
+                kb.init_db()
+            except Exception as exc:
+                return _err(f"kanban: could not initialize database: {exc}")
 
         handler = _HANDLERS.get(action)
         if not handler:
@@ -204,6 +217,12 @@ def _profile_author() -> str:
     from hermes_cli.profiles import current_profile_name
     return current_profile_name("user") or "user"
 
+
+# Read-only verbs may skip init_db under a delegate-child fence when the DB
+# already exists — mutations remain fail-closed at write_txn / CLI guards.
+_READ_ONLY_KANBAN_ACTIONS: frozenset[str] = frozenset({
+    "list", "ls", "show", "stats", "diagnostics", "diag", "attachments",
+})
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
@@ -422,7 +441,17 @@ def _cmd_list(args: argparse.Namespace) -> int:
         assignee = _profile_author()
     with kbc.connect_closing() as conn:
         # Cheap mini-dispatch so list reflects dependencies cleared since the last tick.
-        kb.recompute_ready(conn)
+        # Skip under a delegate-child fence — recompute_ready opens write_txn
+        # and would deny an otherwise read-only `list` (false-positive fence
+        # or genuine child). Real mutations stay fail-closed elsewhere.
+        try:
+            from agent.delegation_context import is_delegated_child_process_context
+
+            _list_fenced = is_delegated_child_process_context()
+        except Exception:
+            _list_fenced = bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+        if not _list_fenced:
+            kb.recompute_ready(conn)
         tasks = kb.list_tasks(
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),

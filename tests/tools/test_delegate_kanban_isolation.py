@@ -175,6 +175,21 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
     assert env["HERMES_KANBAN_WORKSPACE"] == str(tmp_path / "parent-workspace")
 
 
+def test_parent_can_mutate_kanban_again_after_delegate_child_scope(monkeypatch, tmp_path):
+    """C (isolation module): leaving delegated_child_context restores write rights."""
+    kb, _tid, _workspace, _attachments = _make_running_kanban_task(monkeypatch, tmp_path)
+    from agent.delegation_context import delegated_child_context, is_delegated_child_context
+
+    with delegated_child_context():
+        assert is_delegated_child_context()
+        with pytest.raises(PermissionError, match="delegate_task child"):
+            kb.create_board("during-child")
+
+    assert not is_delegated_child_context()
+    kb.create_board("after-child")
+    assert kb.board_exists("after-child")
+
+
 def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
     monkeypatch,
     tmp_path,

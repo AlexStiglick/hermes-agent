@@ -293,6 +293,31 @@ def _filter_secret_env(
             out[key] = value
 
 
+def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
+    """Strip dispatcher-owned Kanban env from delegate_task child subprocesses.
+
+    Stamping uses the live ContextVar (``is_delegated_child_context``), not the
+    process-lineage predicate. A parent that merely inherited a stale
+    ``HERMES_DELEGATED_CHILD_CONTEXT`` env marker must not re-enter
+    ``scrub_kanban_env`` (which would re-stamp the fence onto every terminal
+    child and strip that parent's legitimate ``HERMES_KANBAN_*`` identity).
+    Process-lineage helpers (``is_delegated_child_process_context``,
+    ``delegated_child_subprocess_env``) remain the authority for DB/CLI gates
+    and intentional cross-fork grants in genuine descendant processes.
+    """
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_context,
+            scrub_kanban_env,
+        )
+
+        if is_delegated_child_context():
+            return scrub_kanban_env(env)
+    except Exception:
+        pass
+    return env
+
+
 def _finalize_child_env(env: dict) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
@@ -301,8 +326,7 @@ def _finalize_child_env(env: dict) -> dict:
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
-    from agent.delegation_context import delegated_child_subprocess_env
-    return delegated_child_subprocess_env(env)
+    return _scrub_delegated_child_kanban_env(env)
 
 
 def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
@@ -407,8 +431,7 @@ def build_subprocess_env(
         _apply_profile_home(env)
     if extra:
         env.update(extra)
-    from agent.delegation_context import delegated_child_subprocess_env
-    return delegated_child_subprocess_env(env)
+    return _scrub_delegated_child_kanban_env(env)
 
 
 def served_profile_child_env(

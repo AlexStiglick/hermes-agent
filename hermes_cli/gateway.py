@@ -1052,9 +1052,11 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
 
 def _host_gateway_watcher_env() -> dict[str, str]:
     """Scrubbed default-profile env for a detached host-gateway respawn watcher."""
+    from hermes_cli.gateway_restart_env import scrub_delegate_child_env_markers
     from tools.environments.local import host_gateway_child_env
     env = host_gateway_child_env()
     env.pop("_HERMES_GATEWAY", None)
+    scrub_delegate_child_env_markers(env)
     return env
 
 
@@ -1094,6 +1096,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         # package-manager handoff is the bare store Python without the dependency environment.
         # ``-c`` only puts the cwd on sys.path, so name the checkout explicitly.
         sys.path.insert(0, {project_root_literal})
+        from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
         from hermes_cli._subprocess_compat import (
             _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, windows_detach_flags,
             windows_detach_flags_without_breakaway,
@@ -1101,6 +1104,11 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
 
         pid = int(sys.argv[1])
         cmd = sys.argv[2:]
+        # Respawn boundary: a gateway is never a delegate child. A marker
+        # inherited from the fenced shell that started this watcher would
+        # fence the respawned gateway's embedded dispatcher.
+        for _k in (DELEGATED_CHILD_ENV_MARKER, "HERMES_KANBAN_TASK"):
+            os.environ.pop(_k, None)
         _respawn_cwd = {respawn_cwd_literal}
         _respawn_env_overlay = {respawn_env_literal}
         deadline = time.monotonic() + {watcher_timeout_literal}
@@ -4565,6 +4573,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _attach_to_host_gateway_or_guard(force=force, replace=replace)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
+    # Self-heal at the startup boundary: a gateway is never a delegate child.
+    # A marker inherited from the fenced shell that (re)started us would fence
+    # this gateway's own embedded dispatcher — every board write would fail
+    # with PermissionError (#136152).
+    from hermes_cli.gateway_restart_env import scrub_delegate_child_env_markers
+
+    scrub_delegate_child_env_markers(os.environ)
     sys.path.insert(0, str(PROJECT_ROOT))
     _apply_startup_watchdog_config()
     from hermes_cli.observability.shared_metrics_process import begin_process
